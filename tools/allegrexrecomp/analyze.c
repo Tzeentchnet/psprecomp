@@ -482,6 +482,8 @@ int a_discover(a_analysis *an, const uint32_t *seeds, int nseeds) {
     for (uint32_t i = 0; i < nwords; i++) owner[i] = A_NO_OWNER;
 
     u32list queue = { 0 }, imports = { 0 }, indirects = { 0 }, cross = { 0 };
+    u32list tabled = { 0 };     /* jr sites already counted as resolved */
+    u32list unresolved = { 0 }; /* jr sites no table was found for */
     walk_ctx ctx = { an, seen, entry_map, owner, A_NO_OWNER,
                      &queue, &imports, &indirects, &cross };
 
@@ -591,7 +593,17 @@ int a_discover(a_analysis *an, const uint32_t *seeds, int nseeds) {
         u32list targets = { 0 };
         for (int i = 0; i < indirects.n; i++) {
             int n = resolve_jump_table(an, indirects.v[i], &targets);
-            if (n > 0) { an->ntables++; an->ntable_targets += n; }
+            /* Every round re-walks from a clean slate and so meets, and
+             * resolves, the same sites again. Count each one once. */
+            if (n > 0 && !u32_contains(&tabled, indirects.v[i])) {
+                u32_push(&tabled, indirects.v[i]);
+                an->ntables++;
+                an->ntable_targets += n;
+            }
+            /* Resolution reads only the image, so a site that fails once
+             * fails every round: these are the unresolved sites. */
+            if (n <= 0 && !u32_contains(&unresolved, indirects.v[i]))
+                u32_push(&unresolved, indirects.v[i]);
         }
         for (int i = 0; i < cross.n; i++) u32_push(&targets, cross.v[i]);
         cross.n = 0;
@@ -669,12 +681,15 @@ int a_discover(a_analysis *an, const uint32_t *seeds, int nseeds) {
     an->nfuncs = nfuncs;
     an->imports = imports.v;
     an->nimports = imports.n;
-    an->indirects = indirects.v;
-    an->nindirects = indirects.n;
+    /* `indirects` is emptied every round, so by now it holds nothing. */
+    an->indirects = unresolved.v;
+    an->nindirects = unresolved.n;
 
     an->owner = owner;
     an->nwords = nwords;
 
+    free(indirects.v);
+    free(tabled.v);
     free(cross.v);
     free(queue.v);
     free(seen);
